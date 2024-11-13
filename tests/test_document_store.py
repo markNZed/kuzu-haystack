@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 from haystack.testing.document_store import DocumentStoreBaseTests
-from haystack_integrations.document_stores.example_store import ExampleDocumentStore
+from haystack_integrations.document_stores.kuzu_store import KuzuDocumentStore
 
 
 @pytest.mark.skip("This is an example Document Store")
@@ -14,9 +14,9 @@ class TestDocumentStore(DocumentStoreBaseTests):
     """
 
     @pytest.fixture
-    def docstore(self) -> ExampleDocumentStore:
+    def docstore(self) -> KuzuDocumentStore:
         """
         This is the most basic requirement for the child class: provide
         an instance of this document store so the base class can use it.
         """
-        return ExampleDocumentStore()
+        return KuzuDocumentStore()

@@ -11,7 +11,7 @@ from haystack.document_stores.types import DuplicatePolicy
 logger = logging.getLogger(__name__)
 
 
-class ExampleDocumentStore:  # FIXME
+class KuzuDocumentStore:  # FIXME
     """
     Except for the __init__(), signatures of any other method in this class must not change.
     """
@@ -139,7 +139,7 @@ class ExampleDocumentStore:  # FIXME
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ExampleDocumentStore":
+    def from_dict(cls, data: Dict[str, Any]) -> "KuzuDocumentStore":
         """
         Deserializes the store from a dictionary, if you customised anything in `to_dict`,
         you can changed it back here.
