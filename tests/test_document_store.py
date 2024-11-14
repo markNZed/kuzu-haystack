@@ -31,7 +31,7 @@ class TestKuzuDocumentStore(DocumentStoreBaseTests):
         assert docstore.count_documents() == 2
         
         retrieved = docstore.filter_documents()
-        print(f"retrieved = {retrieved}")
+        #print(f"retrieved = {retrieved}")
         assert len(retrieved) == 2
         assert retrieved[0].content in ["test1", "test2"]
 
@@ -45,7 +45,7 @@ class TestKuzuDocumentStore(DocumentStoreBaseTests):
         assert docstore.count_documents() == 3
         
         retrieved = docstore.filter_documents()
-        print(f"retrieved = {retrieved}")
+        #print(f"retrieved = {retrieved}")
         assert len(retrieved) == 3
         assert retrieved[0].content in ["doc1", "doc2", "doc3"]
 
@@ -86,7 +86,7 @@ class TestKuzuDocumentStore(DocumentStoreBaseTests):
         #filters = {"field": "meta.type", "operator": "==", "value": "article"}
         
         results = docstore.filter_documents(filters)
-        print(f"results = {results}")
+        #print(f"results = {results}")
         assert len(results) == 2
         assert all(d.meta["type"] == "article" and d.meta["rating"] >= 4 for d in results)
 
