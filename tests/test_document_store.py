@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 from haystack.testing.document_store import DocumentStoreBaseTests
+
 from haystack_integrations.document_stores.kuzu_store import KuzuDocumentStore
 
 

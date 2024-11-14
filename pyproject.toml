@@ -11,7 +11,7 @@ requires-python = ">=3.7"
 license = "Apache-2.0"
 keywords = []
 authors = [
-  { name = "John Doe", email = "jd@example.com" },
+  { name = "Mark Hampton", email = "mark.hampton@ieee.org" },
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
   "haystack-ai",
   "typing_extensions",
+  "kuzu"
 ]
 
 [project.urls]
@@ -75,7 +76,7 @@ style = [
 ]
 fmt = [
   "black {args:.}",
-  "ruff --fix {args:.}",
+  "ruff check {args:.} --fix",
   "style",
 ]
 all = [
@@ -176,6 +177,7 @@ markers = [
 module = [
   "haystack.*",
   "pytest.*",
-  "haystack_integrations.*"
+  "haystack_integrations.*",
+  "kuzu"
 ]
 ignore_missing_imports = true

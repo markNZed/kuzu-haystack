@@ -1,9 +1,8 @@
-# SPDX-FileCopyrightText: 2023-present John Doe <jd@example.com>
-#
-# SPDX-License-Identifier: Apache-2.0
+import ast
 import logging
 from typing import Any, Dict, List, Optional
 
+import kuzu
 from haystack import Document, default_from_dict, default_to_dict
 from haystack.document_stores.errors import DuplicateDocumentError, MissingDocumentError
 from haystack.document_stores.types import DuplicatePolicy
@@ -11,137 +10,95 @@ from haystack.document_stores.types import DuplicatePolicy
 logger = logging.getLogger(__name__)
 
 
-class KuzuDocumentStore:  # FIXME
-    """
-    Except for the __init__(), signatures of any other method in this class must not change.
-    """
+class KuzuDocumentStore:
+    def __init__(self, db_path: str):
+        """
+        Initializes the Kuzu document store.
 
-    def __init__(self, example_param: int = 42):
+        Args:
+            db_path: Path to the Kuzu database
         """
-        Initializes the store. The __init__ constructor is not part of the Store Protocol
-        and the signature can be customized to your needs. For example, parameters needed
-        to set up a database client would be passed to this method.
+
+        self.db = kuzu.Database(db_path)
+        self.connection = kuzu.Connection(self.db)
+
+        # Create document table if it doesn't exist
+        self.connection.execute(
+            """
+            CREATE NODE TABLE IF NOT EXISTS documents(
+                id STRING,
+                content STRING,
+                meta STRING,
+                PRIMARY KEY (id)
+            )
         """
-        self.example_param = example_param  # FIXME
+        )
 
     def count_documents(self) -> int:
-        """
-        Returns how many documents are present in the document store.
-        """
-        return 0  # FIXME
+        result = self.connection.execute("MATCH (d:documents) RETURN count(d) as count")
+        return result.get_next()["count"]
 
-    def filter_documents(self, _: Optional[Dict[str, Any]] = None) -> List[Document]:
-        """
-        Returns the documents that match the filters provided.
+    def filter_documents(self, filters: Optional[Dict[str, Any]] = None) -> List[Document]:
+        if not filters:
+            # Return all documents if no filters
+            result = self.connection.execute("MATCH (d:documents) RETURN d.id, d.content, d.meta")
+            return [
+                Document(id=row["d.id"], content=row["d.content"], meta=ast.literal_eval(row["d.meta"]))
+                for row in result
+            ]
 
-        Filters are defined as nested dictionaries that can be of two types:
-        - Comparison
-        - Logic
-
-        Comparison dictionaries must contain the keys:
-
-        - `field`
-        - `operator`
-        - `value`
-
-        Logic dictionaries must contain the keys:
-
-        - `operator`
-        - `conditions`
-
-        The `conditions` key must be a list of dictionaries, either of type Comparison or Logic.
-
-        The `operator` value in Comparison dictionaries must be one of:
-
-        - `==`
-        - `!=`
-        - `>`
-        - `>=`
-        - `<`
-        - `<=`
-        - `in`
-        - `not in`
-
-        The `operator` values in Logic dictionaries must be one of:
-
-        - `NOT`
-        - `OR`
-        - `AND`
-
-
-        A simple filter:
-        ```python
-        filters = {"field": "meta.type", "operator": "==", "value": "article"}
-        ```
-
-        A more complex filter:
-        ```python
-        filters = {
-            "operator": "AND",
-            "conditions": [
-                {"field": "meta.type", "operator": "==", "value": "article"},
-                {"field": "meta.date", "operator": ">=", "value": 1420066800},
-                {"field": "meta.date", "operator": "<", "value": 1609455600},
-                {"field": "meta.rating", "operator": ">=", "value": 3},
-                {
-                    "operator": "OR",
-                    "conditions": [
-                        {"field": "meta.genre", "operator": "in", "value": ["economy", "politics"]},
-                        {"field": "meta.publisher", "operator": "==", "value": "nytimes"},
-                    ],
-                },
-            ],
-        }
-
-        :param filters: the filters to apply to the document list.
-        :return: a list of Documents that match the given filters.
-        """
-        return []  # FIXME
+        # TODO: Implement filter logic based on the filter specification
+        return []
 
     def write_documents(self, documents: List[Document], policy: DuplicatePolicy = DuplicatePolicy.NONE) -> int:
-        """
-        Writes (or overwrites) documents into the store.
+        count = 0
+        for doc in documents:
+            try:
+                # Check if document exists
+                result = self.connection.execute("MATCH (d:documents) WHERE d.id = $id RETURN d.id", {"id": doc.id})
+                exists = result.get_next() is not None
 
-        :param documents: a list of documents.
-        :param policy: documents with the same ID count as duplicates. When duplicates are met,
-            the store can:
-             - skip: keep the existing document and ignore the new one.
-             - overwrite: remove the old document and write the new one.
-             - fail: an error is raised
-        :raises DuplicateDocumentError: Exception trigger on duplicate document if `policy=DuplicatePolicy.FAIL`
-        :return: None
-        """
-        for _ in documents:  # FIXME
-            if policy == DuplicatePolicy.FAIL:
-                raise DuplicateDocumentError
-        return 0
+                if exists:
+                    if policy == DuplicatePolicy.FAIL:
+                        msg = f"Document with id {doc.id} already exists"
+                        raise DuplicateDocumentError(msg)
+                    elif policy == DuplicatePolicy.SKIP:
+                        continue
+                    elif policy == DuplicatePolicy.OVERWRITE:
+                        self.connection.execute("MATCH (d:documents) WHERE d.id = $id DELETE d", {"id": doc.id})
+
+                # Insert document
+                self.connection.execute(
+                    """
+                    CREATE (d:documents {
+                        id: $id,
+                        content: $content,
+                        meta: $meta
+                    })
+                    """,
+                    {"id": doc.id, "content": doc.content, "meta": str(doc.meta)},
+                )
+                count += 1
+            except Exception as e:
+                logger.error(f"Error writing document {doc.id}: {e!s}")
+                raise
+
+        return count
 
     def delete_documents(self, document_ids: List[str]) -> None:
-        """
-        Deletes all documents with a matching document_ids from the document store.
-        Fails with `MissingDocumentError` if no document with this id is present in the store.
+        for doc_id in document_ids:
+            result = self.connection.execute("MATCH (d:documents) WHERE d.id = $id RETURN d.id", {"id": doc_id})
+            if result.get_next() is None:
+                msg = f"ID '{doc_id}' not found, cannot delete it."
+                raise MissingDocumentError(msg)
 
-        :param object_ids: the object_ids to delete
-        """
-        for doc_id in document_ids:  # FIXME
-            msg = f"ID '{doc_id}' not found, cannot delete it."
-            raise MissingDocumentError(msg)
+            self.connection.execute("MATCH (d:documents) WHERE d.id = $id DELETE d", {"id": doc_id})
 
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Serializes this store to a dictionary. You can customise here what goes into the
-        final serialized format.
-        """
-        data = default_to_dict(
-            self,
-            example_param=self.example_param,
-        )
-        return data
+        """Serializes this store to a dictionary."""
+        return default_to_dict(self, db_path=self.db.path)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "KuzuDocumentStore":
-        """
-        Deserializes the store from a dictionary, if you customised anything in `to_dict`,
-        you can changed it back here.
-        """
+        """Deserializes the store from a dictionary."""
         return default_from_dict(cls, data)
