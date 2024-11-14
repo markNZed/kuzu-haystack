@@ -172,7 +172,6 @@ markers = [
   "unit: unit tests",
   "integration: integration tests"
 ]
-python_paths = ["src"]
 
 [[tool.mypy.overrides]]
 module = [

@@ -44,7 +44,6 @@ class KuzuDocumentStore:
             # Execute the query to retrieve all documents
             result = self.connection.execute("MATCH (d:documents) RETURN d.id, d.content, d.meta")
             
-            # Fetch each row individually using hasNext() and getNext()
             while result.has_next():
                 row = result.get_next()
                 documents.append(
@@ -54,38 +53,39 @@ class KuzuDocumentStore:
         return documents
 
     def write_documents(self, documents: List[Document], policy: DuplicatePolicy = DuplicatePolicy.NONE) -> int:
-        count = 0
+        document_written = 0
         for doc in documents:
-            try:
-                # Check if document exists
-                result = self.connection.execute("MATCH (d:documents) WHERE d.id = $id RETURN d.id", {"id": doc.id})
+            # Check for document existence
+            result = self.connection.execute("MATCH (d:documents) WHERE d.id = $id RETURN d", {"id": doc.id})
+            
+            if result.has_next():
+                # Document already exists
+                if policy == "fail":
+                    raise DuplicateDocumentError(f"Document with id {doc.id} already exists.")
+                elif policy == "skip":
+                    continue
+                elif policy == "overwrite":
+                    # Delete the existing document with the same id
+                    self.connection.execute("MATCH (d:documents) WHERE d.id = $id DELETE d", {"id": doc.id})
+            
+            # Insert the document
+            self.connection.execute(
+                """
+                CREATE (d:documents {
+                    id: $id,
+                    content: $content,
+                    meta: $meta
+                })
+                """,
+                {
+                    "id": doc.id,
+                    "content": doc.content,
+                    "meta": str(doc.meta),
+                }
+            )
+            document_written += 1
 
-                if result.has_next():
-                    if policy == DuplicatePolicy.FAIL:
-                        msg = f"Document with id {doc.id} already exists"
-                        raise DuplicateDocumentError(msg)
-                    elif policy == DuplicatePolicy.SKIP:
-                        continue
-                    elif policy == DuplicatePolicy.OVERWRITE:
-                        self.connection.execute("MATCH (d:documents) WHERE d.id = $id DELETE d", {"id": doc.id})
-
-                # Insert document
-                self.connection.execute(
-                    """
-                    CREATE (d:documents {
-                        id: $id,
-                        content: $content,
-                        meta: $meta
-                    })
-                    """,
-                    {"id": doc.id, "content": doc.content, "meta": str(doc.meta)},
-                )
-                count += 1
-            except Exception as e:
-                logger.error(f"Error writing document {doc.id}: {e!s}")
-                raise
-
-        return count
+        return document_written
 
     def delete_documents(self, document_ids: List[str]) -> None:
         for doc_id in document_ids:
