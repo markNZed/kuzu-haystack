@@ -24,15 +24,31 @@ class TestKuzuDocumentStore(DocumentStoreBaseTests):
 
     def test_write_and_read_documents(self, docstore):
         docs = [
-            Document(content="test1", meta={"key1": "value1"}),
-            Document(content="test2", meta={"key2": "value2"})
+            Document(content="test1", meta={"keystring": "value1", "keyint": 1, "keyfloat": 1.0}),
+            Document(content="test2", meta={"keystring": "value2", "keyint": 2, "keyfloat": 2.0})
         ]
         docstore.write_documents(docs)
         assert docstore.count_documents() == 2
         
         retrieved = docstore.filter_documents()
+        print(f"retrieved = {retrieved}")
         assert len(retrieved) == 2
         assert retrieved[0].content in ["test1", "test2"]
+
+    def test_write_and_read_complex_documents(self, docstore):
+        docs = [
+            Document(content="doc1", meta={"type": "article", "rating": 4}),
+            Document(content="doc2", meta={"type": "blog", "rating": 3}),
+            Document(content="doc3", meta={"type": "article", "rating": 5})
+        ]
+        docstore.write_documents(docs)
+        assert docstore.count_documents() == 3
+        
+        retrieved = docstore.filter_documents()
+        print(f"retrieved = {retrieved}")
+        assert len(retrieved) == 3
+        assert retrieved[0].content in ["doc1", "doc2", "doc3"]
+
 
     def test_duplicate_policy(self, docstore):
         doc = Document(content="test", id="1")
@@ -66,8 +82,11 @@ class TestKuzuDocumentStore(DocumentStoreBaseTests):
                 {"field": "meta.rating", "operator": ">=", "value": 4}
             ]
         }
+
+        #filters = {"field": "meta.type", "operator": "==", "value": "article"}
         
         results = docstore.filter_documents(filters)
+        print(f"results = {results}")
         assert len(results) == 2
         assert all(d.meta["type"] == "article" and d.meta["rating"] >= 4 for d in results)
 

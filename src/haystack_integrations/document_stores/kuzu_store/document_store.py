@@ -1,5 +1,6 @@
 import ast
 import logging
+import json
 from typing import Any, Dict, List, Optional
 
 import kuzu
@@ -18,89 +19,240 @@ class KuzuDocumentStore:
         Args:
             db_path: Path to the Kuzu database
         """
-
         self.db = kuzu.Database(db_path)
         self.connection = kuzu.Connection(self.db)
 
-        # Create document table if it doesn't exist
+        # Define document schema with separate fields for different `meta` data types
         self.connection.execute(
             """
             CREATE NODE TABLE IF NOT EXISTS documents(
                 id STRING,
                 content STRING,
-                meta STRING,
+                meta_STRING MAP(STRING, STRING),
+                meta_INT MAP(STRING, INT64),
+                meta_FLOAT MAP(STRING, FLOAT),
+                embedding FLOAT[],
                 PRIMARY KEY (id)
             )
-        """
+            """
         )
+        logger.info("Initialized KuzuDocumentStore with database at %s", db_path)
 
     def count_documents(self) -> int:
+        """
+        Counts the number of documents in the store.
+        """
         result = self.connection.execute("MATCH (d:documents) RETURN count(d) as count")
         return result.get_next()[0]
-    
-    def filter_documents(self, filters: Optional[Dict[str, Any]] = None) -> List[Document]:
-        documents = []
-        if not filters:
-            # Execute the query to retrieve all documents
-            result = self.connection.execute("MATCH (d:documents) RETURN d.id, d.content, d.meta")
-            
-            while result.has_next():
-                row = result.get_next()
-                documents.append(
-                    Document(id=row[0], content=row[1], meta=ast.literal_eval(row[2]))  # Adjust indices if needed
-                )
-        # Add handling for filter-based querying if applicable
-        return documents
+
+    def _categorize_meta(self, meta: Dict[str, Any]) -> Dict[str, Dict[str, List[Any]]]:
+        """
+        Categorizes meta into `meta_STRING`, `meta_INT`, and `meta_FLOAT` fields,
+        each formatted as `{"key": [...], "value": [...]}` dictionaries.
+        """
+        meta_dict = {
+            "meta_STRING": {"key": [], "value": []},
+            "meta_INT": {"key": [], "value": []},
+            "meta_FLOAT": {"key": [], "value": []}
+        }
+
+        for key, value in meta.items():
+            if isinstance(value, str):
+                meta_dict["meta_STRING"]["key"].append(key)
+                meta_dict["meta_STRING"]["value"].append(value)
+            elif isinstance(value, int):
+                meta_dict["meta_INT"]["key"].append(key)
+                meta_dict["meta_INT"]["value"].append(value)
+            elif isinstance(value, float):
+                meta_dict["meta_FLOAT"]["key"].append(key)
+                meta_dict["meta_FLOAT"]["value"].append(value)
+            else:
+                logger.warning(f"Unsupported meta type for key {key}: {type(value).__name__}")
+
+        return meta_dict
+
 
     def write_documents(self, documents: List[Document], policy: DuplicatePolicy = DuplicatePolicy.NONE) -> int:
+        """
+        Writes documents to the store, handling metadata by type.
+        """
         document_written = 0
         for doc in documents:
-            # Check for document existence
+            # Check if the document already exists
             result = self.connection.execute("MATCH (d:documents) WHERE d.id = $id RETURN d", {"id": doc.id})
+
+            # Convert policy to DuplicatePolicy if it is passed as a string
+            if isinstance(policy, str):
+                policy = DuplicatePolicy(policy)
             
             if result.has_next():
-                # Document already exists
-                if policy == "fail":
+                if policy == DuplicatePolicy.FAIL:
                     raise DuplicateDocumentError(f"Document with id {doc.id} already exists.")
-                elif policy == "skip":
+                elif policy == DuplicatePolicy.SKIP:
                     continue
-                elif policy == "overwrite":
+                elif policy == DuplicatePolicy.OVERWRITE:
                     # Delete the existing document with the same id
                     self.connection.execute("MATCH (d:documents) WHERE d.id = $id DELETE d", {"id": doc.id})
-            
-            # Insert the document
-            self.connection.execute(
-                """
-                CREATE (d:documents {
-                    id: $id,
-                    content: $content,
-                    meta: $meta
-                })
-                """,
-                {
-                    "id": doc.id,
-                    "content": doc.content,
-                    "meta": str(doc.meta),
-                }
-            )
+
+            # Categorize meta data by type
+            categorized_meta = self._categorize_meta(doc.meta or {})
+
+            # Define query to create a document node with type-specific metadata fields
+            query = """
+            CREATE (d:documents {
+                id: $id,
+                content: $content,
+                meta_STRING: $meta_STRING,
+                meta_INT: $meta_INT,
+                meta_FLOAT: $meta_FLOAT
+            })
+            """
+            params = {
+                "id": doc.id,
+                "content": doc.content,
+                "meta_STRING": categorized_meta["meta_STRING"],
+                "meta_INT": categorized_meta["meta_INT"],
+                "meta_FLOAT": categorized_meta["meta_FLOAT"]
+            }
+            self.connection.execute(query, params)
             document_written += 1
 
         return document_written
 
+
     def delete_documents(self, document_ids: List[str]) -> None:
+        """
+        Deletes documents from the store.
+        """
         for doc_id in document_ids:
             result = self.connection.execute("MATCH (d:documents) WHERE d.id = $id RETURN d.id", {"id": doc_id})
             if result.get_next() is None:
-                msg = f"ID '{doc_id}' not found, cannot delete it."
-                raise MissingDocumentError(msg)
+                raise MissingDocumentError(f"ID '{doc_id}' not found, cannot delete it.")
 
             self.connection.execute("MATCH (d:documents) WHERE d.id = $id DELETE d", {"id": doc_id})
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serializes this store to a dictionary."""
-        return default_to_dict(self, db_path=self.db.path)
+    def _build_filter_query(self, filters: Dict[str, Any]) -> str:
+        """
+        Builds a WHERE clause for filtering documents.
+        """
+        if not filters:
+            return ""
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "KuzuDocumentStore":
-        """Deserializes the store from a dictionary."""
-        return default_from_dict(cls, data)
+        # Check if `filters` is a single condition (not nested)
+        if "field" in filters and "operator" in filters and "value" in filters:
+            # Handle as a single condition
+            return self._build_single_condition(filters)
+        
+        # If not a single condition, treat as nested conditions
+        operator = filters.get("operator", "AND").upper()
+        if operator not in ["AND", "OR", "NOT"]:
+            raise ValueError("Operator must be 'AND', 'OR', or 'NOT'.")
+
+        conditions = []
+        for condition in filters.get("conditions", []):
+            if "conditions" in condition:
+                # Recursively build nested conditions
+                nested_query = self._build_filter_query(condition)
+                conditions.append(f"NOT ({nested_query})" if operator == "NOT" else f"({nested_query})")
+            else:
+                # Build individual condition
+                conditions.append(self._build_single_condition(condition))
+
+        # Join conditions with the specified operator
+        joined_conditions = f" {operator} ".join(conditions)
+        return f"({joined_conditions})" if len(conditions) > 1 else joined_conditions
+
+    def _build_single_condition(self, condition: Dict[str, Any]) -> str:
+        """
+        Builds a single condition for the WHERE clause.
+        """
+        field = condition["field"]
+        if not field.startswith("meta."):
+            raise ValueError(f"Unsupported field format: {field}")
+        key = field.split("meta.", 1)[1]
+        value = condition["value"]
+        op = condition["operator"]
+
+        # Determine the correct field access based on type
+        if isinstance(value, str):
+            field_access = f"map_extract(d.meta_STRING, '{key}')[1]"
+        elif isinstance(value, int):
+            field_access = f"map_extract(d.meta_INT, '{key}')[1]"
+        elif isinstance(value, float):
+            field_access = f"map_extract(d.meta_FLOAT, '{key}')[1]"
+        else:
+            raise ValueError(f"Unsupported filter value type: {type(value).__name__}")
+
+        # Safely format the value
+        formatted_value = self._format_value(value)
+
+        # Build the condition based on the operator
+        if op == "==":
+            return f"{field_access} = {formatted_value}"
+        elif op == "!=":
+            return f"{field_access} <> {formatted_value}"
+        elif op == ">=":
+            return f"{field_access} >= {formatted_value}"
+        elif op == "<=":
+            return f"{field_access} <= {formatted_value}"
+        elif op == ">":
+            return f"{field_access} > {formatted_value}"
+        elif op == "<":
+            return f"{field_access} < {formatted_value}"
+        elif op == "in":
+            if not isinstance(value, list):
+                raise ValueError("Operator 'in' requires a list of values.")
+            value_list = ", ".join([self._format_value(v) for v in value])
+            return f"{field_access} IN [{value_list}]"
+        elif op == "not in":
+            if not isinstance(value, list):
+                raise ValueError("Operator 'not in' requires a list of values.")
+            value_list = ", ".join([self._format_value(v) for v in value])
+            return f"{field_access} NOT IN [{value_list}]"
+        else:
+            raise ValueError(f"Unsupported operator: {op}")
+
+    def _format_value(self, value):
+        """
+        Formats value for Cypher syntax.
+        """
+        if isinstance(value, str):
+            return f"'{value}'"
+        elif value is None:
+            return "null"
+        return value
+
+    def filter_documents(self, filters: Optional[Dict[str, Any]] = None) -> List[Document]:
+        """
+        Retrieves documents matching the specified filters.
+        """
+        documents = []
+        query = "MATCH (d:documents) "
+
+        if filters:
+            where_clause = self._build_filter_query(filters)
+            query += f"WHERE {where_clause} "
+
+        query += "RETURN d.id, d.content, d.meta_STRING, d.meta_INT, d.meta_FLOAT"
+
+        result = self.connection.execute(query)
+
+        while result.has_next():
+            row = result.get_next()
+            doc_id, content, meta_string, meta_int, meta_float = row
+
+            # Initialize an empty meta dictionary
+            meta = {}
+
+           # Directly update meta with the existing dictionaries if they are not empty
+            if meta_string:
+                meta.update(meta_string)
+            if meta_int:
+                meta.update(meta_int)
+            if meta_float:
+                meta.update(meta_float)
+
+            # Append the document with parsed metadata to the list
+            documents.append(Document(id=doc_id, content=content, meta=meta))
+
+        return documents
