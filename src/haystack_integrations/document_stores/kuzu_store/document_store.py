@@ -7,6 +7,7 @@ import kuzu
 from haystack import Document, default_from_dict, default_to_dict
 from haystack.document_stores.errors import DuplicateDocumentError, MissingDocumentError
 from haystack.document_stores.types import DuplicatePolicy
+from haystack.core.errors import DeserializationError
 
 logger = logging.getLogger(__name__)
 
@@ -256,3 +257,32 @@ class KuzuDocumentStore:
             documents.append(Document(id=doc_id, content=content, meta=meta))
 
         return documents
+
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes this store to a dictionary."""
+        return {
+            "type": "KuzuDocumentStore",
+            "db_path": self.db.database_path
+        }
+
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "KuzuDocumentStore":
+        """Deserializes the store from a dictionary.
+
+        :param data: The dictionary containing the serialized data.
+        :returns: The deserialized KuzuDocumentStore object.
+        :raises DeserializationError: If the `type` field in `data` is missing or it doesn't match the type of `cls`.
+        """
+        # Check for the 'type' field in data to ensure it matches the expected class
+        if data.get("type") != "KuzuDocumentStore":
+            raise DeserializationError("Missing or incorrect 'type' in serialization data")
+        
+        db_path = data.get("db_path")
+
+        if not db_path:
+            raise DeserializationError("Missing 'db_path' in 'init_parameters'")
+
+        # Create and return a new instance of KuzuDocumentStore with the extracted parameters
+        return cls(db_path=db_path)
