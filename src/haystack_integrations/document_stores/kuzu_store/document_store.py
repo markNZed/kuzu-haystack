@@ -36,19 +36,22 @@ class KuzuDocumentStore:
 
     def count_documents(self) -> int:
         result = self.connection.execute("MATCH (d:documents) RETURN count(d) as count")
-        return result.get_next()["count"]
-
+        return result.get_next()[0]
+    
     def filter_documents(self, filters: Optional[Dict[str, Any]] = None) -> List[Document]:
+        documents = []
         if not filters:
-            # Return all documents if no filters
+            # Execute the query to retrieve all documents
             result = self.connection.execute("MATCH (d:documents) RETURN d.id, d.content, d.meta")
-            return [
-                Document(id=row["d.id"], content=row["d.content"], meta=ast.literal_eval(row["d.meta"]))
-                for row in result
-            ]
-
-        # TODO: Implement filter logic based on the filter specification
-        return []
+            
+            # Fetch each row individually using hasNext() and getNext()
+            while result.has_next():
+                row = result.get_next()
+                documents.append(
+                    Document(id=row[0], content=row[1], meta=ast.literal_eval(row[2]))  # Adjust indices if needed
+                )
+        # Add handling for filter-based querying if applicable
+        return documents
 
     def write_documents(self, documents: List[Document], policy: DuplicatePolicy = DuplicatePolicy.NONE) -> int:
         count = 0
@@ -56,9 +59,8 @@ class KuzuDocumentStore:
             try:
                 # Check if document exists
                 result = self.connection.execute("MATCH (d:documents) WHERE d.id = $id RETURN d.id", {"id": doc.id})
-                exists = result.get_next() is not None
 
-                if exists:
+                if result.has_next():
                     if policy == DuplicatePolicy.FAIL:
                         msg = f"Document with id {doc.id} already exists"
                         raise DuplicateDocumentError(msg)
